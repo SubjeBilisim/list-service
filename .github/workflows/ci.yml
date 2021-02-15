@@ -1,0 +1,133 @@
+name: CI
+on:
+  pull_request:
+    branches:
+      - BranchName
+
+  workflow_dispatch:
+
+jobs:
+  build:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
+      - name: 'Checkout GitHub Action' 
+        uses: actions/checkout@v2
+      - name: 'Setup Python'
+        uses: actions/setup-python@v2
+        with:
+          python-version: 3.8
+      - name: 'Install Dependencies'
+        run: |
+          python -m pip install --upgrade pip
+          pip install django-storages
+          # if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+      # - name: 'Cache Python Setup'
+      #   uses: actions/cache@v2
+      #   with:
+      #     path: ~/.cache/pip
+      #     key: '${{ runner.os }}-pip-${{ hashfiles(''**/requirements.txt'') }}'
+      #     restore-keys: |
+      #       ${{ runner.os }}-pip-
+      - name: 'Login via Azure CLI'
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: 'Build and push image'
+        uses: azure/docker-login@v1
+        with:
+          login-server: ${{ secrets.REGISTRY_LOGIN_SERVER }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+
+      - run: |
+          DOCKER_BUILDKIT=1 docker build -t ${{ secrets.REGISTRY_LOGIN_SERVER }}/ServiceName:${{ github.sha }} --target prod .
+          docker push ${{ secrets.REGISTRY_LOGIN_SERVER }}/ServiceName:${{ github.sha }}
+
+  terraform:
+    name: 'Terraform'
+    needs: build
+    runs-on: ubuntu-latest
+
+    # Add env variables for service principal
+    env:
+      # TF_LOG: TRACE
+      TF_VAR_client_id: ${{ secrets.ARM_CLIENT_ID }}
+      TF_VAR_client_secret: ${{ secrets.ARM_CLIENT_SECRET }}
+      TF_VAR_subscription_id: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+      TF_VAR_tenant_id: ${{ secrets.ARM_TENANT_ID }}
+
+    steps:
+      - name: 'Checkout'
+        uses: actions/checkout@master
+      - name: 'Terraform Setup'
+        uses: hashicorp/setup-terraform@v1
+        with:
+          cli_config_credentials_token: $ {{ secrets.TF_API_TOKEN }}
+      - name: 'Terraform Format'
+        run: terraform fmt -check ./terraform
+      - name: 'Terraform Init'
+        run: terraform init ./terraform
+      - name: 'Terraform Plan'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          client_id: ${{ secrets.ARM_CLIENT_ID }}
+          client_secret: ${{ secrets.ARM_CLIENT_SECRET }}
+          subscription_id: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+          tenant_id: ${{ secrets.ARM_TENANT_ID }}
+        run: terraform plan ./terraform
+      - name: Terraform Apply
+        if: github.ref == 'refs/heads/develop' && github.event_name == 'pull_request'
+        run: terraform apply -auto-approve ./terraform
+  staging:
+    if: github.run_id != 'refs/heads/develop' &&  github.event_name == 'pull_request'
+    needs: [terraform, build]
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v2
+    - uses: azure/aks-set-context@v1
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
+        resource-group: sociallme-k8s-aks-rg
+        cluster-name: sociallme-k8s-aks
+      id: login
+    - name: Set imagePullSecret
+      uses: azure/k8s-create-secret@v1
+      with:
+        #namespace: 'myapp'
+        container-registry-url: ${{ secrets.REGISTRY_LOGIN_SERVER }}
+        container-registry-username: ${{ secrets.REGISTRY_USERNAME }}
+        container-registry-password: ${{ secrets.REGISTRY_PASSWORD }}
+        secret-name: acr-secret
+        id: create-secret
+    - name: Create k8s secret to use env    
+      uses: azure/k8s-create-secret@v1
+      with:
+        namespace: default
+        secret-type: generic
+        arguments:
+          --from-literal=SECRET_KEY=${{ secrets.DJANGO_SECRET_KEY }}
+          --from-literal=ALLOWED_HOSTS=${{ secrets.DJANGO_ALLOWED_HOSTS }}
+          --from-literal=DATABASE_HOST=${{ secrets.POSTGRES_DATABASE_HOST }}
+          --from-literal=DATABASE_USER=${{ secrets.POSTGRES_DATABASE_USER }}
+          --from-literal=DATABASE_NAME=${{ secrets.POSTGRES_DATABASE_NAME }}
+          --from-literal=DATABASE_PASSWORD=${{ secrets.POSTGRES_DATABASE_PASSWORD }}
+          --from-literal=LOG_LEVEL=${{ secrets.DJANGO_LOG_LEVEL }}
+          --from-literal=DEBUG=${{ secrets.DJANGO_DEBUG }}
+          --from-literal=AZURE_ACCOUNT_NAME=${{ secrets.BLOB_AZURE_ACCOUNT_NAME }}
+          --from-literal=AZURE_ACCOUNT_KEY=${{ secrets.BLOB_AZURE_ACCOUNT_KEY }}
+          --from-literal=AZURE_CUSTOM_DOMAIN=${{ secrets.BLOB_AZURE_CUSTOM_DOMAIN }}
+          --from-literal=AZURE_CONNECTION_STRING=${{ secrets.BLOB_AZURE_CONNECTION_STRING }}
+        secret-name: env-secrets
+    - name: 'Deploy Kubernetes Cluster'
+      uses: Azure/k8s-deploy@v1
+      with:
+        manifests: |
+          ./kubernetes/deployment.yml
+        images: |
+          sociallmek8sacr.azurecr.io/ServiceName:${{ github.sha }}
+        imagepullsecrets: |
+          acr-secret
+        kubectl-version: latest
