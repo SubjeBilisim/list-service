@@ -1,0 +1,60 @@
+name: CI
+
+on:
+#  push:
+#    branches: [ develop ]
+  pull_request:
+    branches: [ develop ]
+  workflow_dispatch:
+
+jobs:
+  build:
+#    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
+      - name: 'Checkout GitHub Action'
+        uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
+      # - name: 'Cache Python Setup'
+      #   uses: actions/cache@v2
+      #   with:
+      #     path: ~/.cache/pip
+      #     key: '${{ runner.os }}-pip-${{ hashfiles(''**/requirements.txt'') }}'
+      #     restore-keys: |
+      #       ${{ runner.os }}-pip-
+
+      - name: SonarCloud Scan
+        uses: sonarsource/sonarcloud-github-action@master
+        env:
+          GITHUB_TOKEN: '${{ secrets.GITHUB_TOKEN }}'
+          SONAR_TOKEN: '${{ secrets.SONAR_TOKEN }}'
+
+          #- name: Run Snyk to check for vulnerabilities
+          #  uses: snyk/actions/python@master
+          #  continue-on-error: true
+          #  env:
+          #    SNYK_TOKEN: '${{ secrets.SNYK_TOKEN }}'
+          #  with:
+          #    command: monitor
+      - name: Security check Bandit
+        uses: libertyy/py3-bandit-check@v2
+        env:
+          TARGET_DIR: ./psan
+      - name: Security check report artifacts
+        uses: actions/upload-artifact@v1
+        if: failure()
+        with:
+          name: Security report
+          path: ${{ RUNNER.temp }}/_github_home/bandit_report.out
+      - name: Python Linter
+        uses: sunnysid3up/python-linter@master
+        if: failure()
+        with:
+           source: "src"
+           strict: "high"
+           mypy-options: "--ignore-missing-imports --show-error-codes"
+           pylint-options: "--rcfile=setup.cfg"
+           isort-options: "-w 100"
+           django: true

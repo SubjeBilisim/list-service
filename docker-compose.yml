@@ -1,0 +1,29 @@
+version: "3.7"
+
+services:
+  postgres:
+    image: postgres:12
+    environment:
+      POSTGRES_HOST_AUTH_METHOD: trust
+    networks:
+      - internal
+  web:
+    build:
+      context: .
+      target: dev
+    volumes:
+      - .:/app
+    container_name: social-list
+    ports:
+      - 1414:8000
+    networks:
+      - internal
+    depends_on:
+      - postgres
+    stdin_open: true
+    tty: true
+    env_file:
+      - ./.env
+
+networks:
+  internal:
