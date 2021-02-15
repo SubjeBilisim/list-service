@@ -57,7 +57,7 @@ jobs:
         pip3 install pytest
         pip3 install codecov
         pip3 install pytest-cov
-        pytest --cov=./ --cov-report=xml
+      #  pytest --cov=./ --cov-report=xml
       #  bash <(curl -s https://codecov.io/bash) # Upload to Codecov
     - run: bash <(curl -s https://codecov.io/bash) -J '^list-services$' -n '${{ matrix.os }}-ui' -F '${{ matrix.os }}'
       env:
