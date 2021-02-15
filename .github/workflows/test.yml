@@ -1,8 +1,9 @@
 name: test
 
 on:
-  pull_request:
-    branches: [ develop ]
+  push:
+    branches:
+      - x
   workflow_dispatch:
 
 jobs:
